@@ -1,0 +1,106 @@
+---
+title: "Predicting execution quality of an exercise"
+author: "Valentin Goverdovsky"
+date: "31 January 2016"
+output: html_document
+---
+
+#Executive Summary
+This document explores a dataset containing a variety of parameters related to weight-lifting exercises and attempts to use these parameters in assessing the quality of the exercise execution. We use cross-validation to tune the support vector machine prediction algorithm and achieve overall out of sample prediction accuracy of 98.57%. 
+
+#Data preprocessing
+We first load the dataset into R and load the required machine learning and graphics libraries.
+```{r, message=FALSE}
+library(caret)
+library(e1071)
+library(ggplot2)
+set.seed(12345)
+```
+
+```{r,cache=TRUE}
+wtLiftData <- read.csv(file = 'classeData.csv')
+d <- dim(wtLiftData)
+```
+
+It's clear that the data set has quite a substantial amount of data with some `r d[2]` features and `r d[1]` data points. Before doing any additional exploration or analysis we split the dataset into training and testing portions, where 20% of the data is left for obtaining the final prediction accuracy and out of sample error rate.
+
+```{r}
+inTrainCV <- createDataPartition(wtLiftData$classe, p=0.8, list=FALSE) 
+trainingCVRaw <- wtLiftData[inTrainCV,]
+testingRaw <- wtLiftData[-inTrainCV,]
+```
+
+By looking at the summary of the dataset, see Appendix - the printout is quite long, we observe that there is a large number of features with either NAs (e.g. max_roll_belt) or empty data (e.g. kurtosis_yaw_belt), thus we discard those with substantial amounts of missing data.
+
+```{r}
+notNA <- sapply(trainingCVRaw, function(i) {sum(is.na(i)) / length(i)}) < 0.9
+trainingCVNotNA <- trainingCVRaw[, notNA]
+
+emptyFeatures <- as.logical(apply(trainingCVNotNA, 2, 
+                                  function(x) any(grepl('#DIV/0!', x))))
+trainingCVNotEmpty <- trainingCVNotNA[, !emptyFeatures]
+```
+
+If a particular feature exhibit close to zero variation across the dataset it is of little value in the prediction algorithm, therefore we should find any such values and exclude them from the feature-set.
+
+```{r}
+nsv <- nearZeroVar(trainingCVNotEmpty, saveMetrics=T)
+trainingCVClean <- trainingCVNotEmpty[, !nsv$nzv]
+```
+
+Finally we don't expect the index of the datasample to have any predictive value, similarly since every user was asked to perform all exercises at all the quality levels, user_name is also not expected to have any predictive value. In fact, the algorithm's performance should be independent of user. In light of the above we exclude additional columns from out training dataset.
+
+```{r}
+idxCols <- grep('timestamp|user|X|num', names(trainingCVClean))
+trainingCVClean <- trainingCVClean[, -idxCols]
+```
+
+```{r, echo=FALSE, results='hide'}
+dimFin <- dim(trainingCVClean)
+```
+
+This data manipulation leaves us with a total of `r dimFin[2]` features to work with compared to the original `r d[2]`. This is still a fairly large number. The original paper which used this dataset used a procedure based on correlation analysis to extract 17 'most important' features and used Randof Forest prediction algorithm. Ufortunately the above-mentioned feature extraction procedure is described in a PhD thesis, and figuring out how exactly it works is beyond the scope of this course. Therefore we pursue a different approach, based on support vector machine prediction algorithms, which are fairly efficient at working with feature-rich dataset.
+
+#Prediction
+SVMs have a number of imporant parameters which affect the accuracy of the predictions, training speed, etc. One of the such parameters is the Cost (C) which is similary to the cost parameter in the regularised regression and penalises excessively large coefficients.
+
+At this point we split our dataset into 30 folds and use cross-validation to train SVM with different values of Cost (C).
+
+```{r, cache=TRUE}
+trainingFolds <- createFolds(trainingCVClean$classe, k=30, list=TRUE, returnTrain=TRUE)
+
+accuracy <- numeric(length(trainingFolds))
+
+for (i in seq_along(trainingFolds)) {
+    svmFit <- svm(classe~., data = trainingCVClean[trainingFolds[[i]],], cost = i)
+    predictions <- predict(svmFit, trainingCVClean[-trainingFolds[[i]],])
+    confMat <- confusionMatrix(predictions, trainingCVClean[-trainingFolds[[i]],]$classe)
+    accuracy[i] <- confMat$overall[1]
+}
+
+qplot(y=accuracy,x=seq_along(accuracy),geom=c('smooth','point'), xlab = 'Cost', ylab = 'Accuracy')
+```
+
+From the plot of the accuracy vs. cost we can clearly see that the accuracy peaks or flattens out at C value of approximately 15, and this is the value that we choose to build the final prediction model.
+
+```{r}
+svmFinal <- svm(classe~., data = trainingCVClean, cost = 15)
+```
+
+Applying this model to the test set produces the following result.
+
+```{r}
+predictTest <- predict(svmFinal, testingRaw)
+confMat <- confusionMatrix(predictTest, testingRaw$classe)
+confMat
+```
+
+This demonstrates that our SVM achieves overall out of sample accuracy of `r round(confMat$overall[1]*100,2)`% and similarly high accuracy for each of the individual values of _classe_ variable.
+
+#Conclusion
+We have analysed the weight training dataset which contains data on the quality of the execution of a particular exersice. An SVM has been trained and cross-validated to predict the _classe_ variable. The overall out of sample accuracy achieved by this method was `r round(confMat$overall[1]*100,2)`%.
+
+#Appendix
+```{r}
+summary(wtLiftData)
+```
